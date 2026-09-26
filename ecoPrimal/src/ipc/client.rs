@@ -82,7 +82,7 @@ impl PrimalClient {
 
     /// Transport description (e.g. `"unix"`, `"unix+btsp"`, `"unix+btsp+chacha20"`).
     #[must_use]
-    pub const fn transport_type(&self) -> &str {
+    pub fn transport_type(&self) -> &str {
         self.transport.transport_type()
     }
 

@@ -123,18 +123,25 @@ fn read_bind_mode_override() -> Option<BindMode> {
 
 /// Probe UDS availability by creating and removing a test socket.
 fn probe_uds() -> (bool, Option<PathBuf>) {
-    let dir = resolve_probe_dir();
+    #[cfg(unix)]
+    {
+        let dir = resolve_probe_dir();
 
-    if std::fs::create_dir_all(&dir).is_err() {
-        return (false, None);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return (false, None);
+        }
+
+        let probe_path = dir.join(".caps_probe.sock");
+        let _ = std::fs::remove_file(&probe_path);
+
+        let available = std::os::unix::net::UnixListener::bind(&probe_path).is_ok();
+        let _ = std::fs::remove_file(&probe_path);
+        (available, Some(dir))
     }
-
-    let probe_path = dir.join(".caps_probe.sock");
-    let _ = std::fs::remove_file(&probe_path);
-
-    let available = std::os::unix::net::UnixListener::bind(&probe_path).is_ok();
-    let _ = std::fs::remove_file(&probe_path);
-    (available, Some(dir))
+    #[cfg(not(unix))]
+    {
+        (false, None)
+    }
 }
 
 /// Probe TCP loopback by binding an ephemeral port.

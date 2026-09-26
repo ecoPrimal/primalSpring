@@ -134,6 +134,7 @@ fn phase_uds_bind(v: &mut ValidationResult) {
                     display.starts_with("unix:"),
                     &format!("endpoint display: {display}"),
                 );
+                #[cfg(unix)]
                 if let BoundTransport::Unix(_, ref path) = bound {
                     let _ = std::fs::remove_file(path);
                 }

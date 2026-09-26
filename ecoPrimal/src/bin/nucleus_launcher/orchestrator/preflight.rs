@@ -197,6 +197,14 @@ fn clean_stale_sockets() -> u32 {
                 cleaned += 1;
             }
         }
+        #[cfg(not(unix))]
+        {
+            // On non-unix platforms (Windows), socket files are not used for IPC.
+            // Remove any stale .sock files unconditionally — they are leftover
+            // artifacts from cross-platform syncs, not live connections.
+            let _ = std::fs::remove_file(&path);
+            cleaned += 1;
+        }
     }
     cleaned
 }

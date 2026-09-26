@@ -22,6 +22,7 @@
 //! capability parsing live in [`crate::ipc::capability`] and are re-exported
 //! here for a stable [`crate::ipc::discover`] path.
 
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -63,10 +64,13 @@ pub fn socket_is_alive(path: &Path) -> bool {
         }
     }
 
+    #[cfg(unix)]
     let alive = UnixStream::connect(path).is_ok_and(|stream| {
         let _ = stream.set_read_timeout(Some(LIVENESS_PROBE_TIMEOUT));
         true
     });
+    #[cfg(not(unix))]
+    let alive = false;
 
     if !alive {
         if let Ok(mut set) = cache.lock() {

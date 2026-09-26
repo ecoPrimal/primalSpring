@@ -143,6 +143,7 @@ impl CallerContext {
         clippy::missing_const_for_fn,
         reason = "will extract peer_cred() when the API stabilizes — not const then"
     )]
+    #[cfg(unix)]
     pub fn from_unix_stream(_stream: &std::os::unix::net::UnixStream) -> Self {
         Self {
             bearer_token: None,

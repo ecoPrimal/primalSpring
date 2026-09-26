@@ -18,8 +18,7 @@
 //! - `handshake_key = HKDF-SHA256(ikm=family_seed, salt="btsp-v1", info="handshake")`
 //! - `response = HMAC-SHA256(key=handshake_key, data=challenge || client_pub || server_pub)`
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{Read, Write};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -32,6 +31,30 @@ use tracing::{debug, warn};
 use super::error::{IpcError, classify_io_error};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Read a single newline-terminated line from a stream without requiring `try_clone()`.
+///
+/// This replaces the `BufReader::new(stream.try_clone())` pattern so that
+/// `client_handshake` and `negotiate_phase3` work with any `Read + Write`
+/// stream, not just types that implement `try_clone()` (e.g. `TcpStream`
+/// on Windows, or any generic stream).
+fn read_line_from(stream: &mut (impl Read + Write)) -> Result<String, IpcError> {
+    let mut line = Vec::with_capacity(4096);
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(e) => return Err(classify_io_error(e)),
+        }
+    }
+    Ok(String::from_utf8_lossy(&line).to_string())
+}
 
 #[derive(Debug, Serialize)]
 struct ClientHello {
@@ -129,7 +152,7 @@ fn compute_challenge_hmac(
 /// Returns `IpcError` on I/O failure, protocol mismatch, or HMAC computation
 /// error.
 pub fn client_handshake(
-    stream: &mut UnixStream,
+    stream: &mut (impl Read + Write),
     family_seed: &[u8],
 ) -> Result<HandshakeResult, IpcError> {
     let handshake_key = derive_handshake_key(family_seed)?;
@@ -160,11 +183,7 @@ pub fn client_handshake(
     debug!("BTSP: ClientHello sent");
 
     // Step 2: read ServerHello
-    let mut reader = BufReader::new(stream.try_clone().map_err(classify_io_error)?);
-    let mut server_hello_line = String::new();
-    reader
-        .read_line(&mut server_hello_line)
-        .map_err(classify_io_error)?;
+    let server_hello_line = read_line_from(stream)?;
 
     if server_hello_line.is_empty() {
         return Err(IpcError::ProtocolError {
@@ -223,10 +242,7 @@ pub fn client_handshake(
     debug!("BTSP: ChallengeResponse sent");
 
     // Step 4: read HandshakeComplete
-    let mut complete_line = String::new();
-    reader
-        .read_line(&mut complete_line)
-        .map_err(classify_io_error)?;
+    let complete_line = read_line_from(stream)?;
 
     if complete_line.is_empty() {
         return Err(IpcError::ProtocolError {
@@ -272,7 +288,7 @@ pub fn client_handshake(
 ///
 /// Returns [`IpcError`] on I/O or serialization failure.
 pub fn negotiate_phase3(
-    stream: &mut UnixStream,
+    stream: &mut (impl Read + Write),
     handshake: &HandshakeResult,
 ) -> Result<Option<crate::btsp::phase3::SessionKeys>, IpcError> {
     use crate::btsp::phase3::{NegotiateResponse, Phase3Cipher, SessionKeys, generate_nonce};
@@ -302,11 +318,7 @@ pub fn negotiate_phase3(
 
     debug!("BTSP Phase 3: negotiate request sent");
 
-    let mut reader = BufReader::new(stream.try_clone().map_err(classify_io_error)?);
-    let mut resp_line = String::new();
-    reader
-        .read_line(&mut resp_line)
-        .map_err(classify_io_error)?;
+    let resp_line = read_line_from(stream)?;
 
     if resp_line.is_empty() {
         debug!("BTSP Phase 3: server closed connection during negotiate — falling back to null");
@@ -520,6 +532,7 @@ mod tests {
     ///
     /// Requires: BearDog server running at `/tmp/beardog-phase3test.sock`
     /// with `FAMILY_SEED` matching this test's env.
+    #[cfg(unix)]
     #[test]
     #[ignore = "requires live BearDog server at /tmp/beardog-phase3test.sock"]
     fn phase3_negotiate_with_live_beardog() {

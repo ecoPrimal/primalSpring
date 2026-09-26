@@ -195,6 +195,7 @@ fn phase_live_handshake(v: &mut ValidationResult, ctx: &CompositionContext) {
     }
 
     let seed = beacon_val.key_bytes().to_vec();
+    #[cfg(unix)]
     let handshake_result = std::os::unix::net::UnixStream::connect(&security_socket)
         .map_err(|e| format!("connect: {e}"))
         .and_then(|mut stream| {
@@ -207,6 +208,9 @@ fn phase_live_handshake(v: &mut ValidationResult, ctx: &CompositionContext) {
             crate::ipc::btsp_handshake::client_handshake(&mut stream, &seed)
                 .map_err(|e| format!("handshake: {e}"))
         });
+    #[cfg(not(unix))]
+    let handshake_result: Result<crate::ipc::btsp_handshake::HandshakeResult, String> =
+        Err("Unix domain sockets not available on this platform".to_owned());
 
     match &handshake_result {
         Ok(result) => {

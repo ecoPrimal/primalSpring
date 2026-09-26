@@ -13,6 +13,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
 const MAX_BTSP_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -27,6 +28,7 @@ use crate::tolerances;
 /// Wire-level transport kind.
 #[derive(Debug)]
 enum TransportInner {
+    #[cfg(unix)]
     Unix(BufReader<UnixStream>),
     Tcp(BufReader<TcpStream>),
 }
@@ -79,6 +81,7 @@ impl Transport {
     /// # Errors
     ///
     /// Returns [`IpcError`] on connection failure.
+    #[cfg(unix)]
     pub fn unix(path: &Path) -> Result<Self, IpcError> {
         let timeout = Duration::from_secs(tolerances::IPC_SOCKET_TIMEOUT_SECS);
         let mut stream = UnixStream::connect(path).map_err(classify_io_error)?;
@@ -98,11 +101,21 @@ impl Transport {
         })
     }
 
+    /// On non-unix platforms, UDS paths are not supported — return a clear error.
+    #[cfg(not(unix))]
+    pub fn unix(path: &Path) -> Result<Self, IpcError> {
+        Err(classify_io_error(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("Unix domain sockets not available on this platform (path: {})", path.display()),
+        )))
+    }
+
     /// Connect via Unix socket with BTSP handshake authentication.
     ///
     /// # Errors
     ///
     /// Returns [`IpcError`] on connection or handshake failure.
+    #[cfg(unix)]
     pub fn unix_btsp(path: &Path, family_seed: &[u8]) -> Result<Self, IpcError> {
         let handshake_timeout = Duration::from_secs(tolerances::BTSP_HANDSHAKE_TIMEOUT_SECS);
         let ipc_timeout = Duration::from_secs(tolerances::IPC_SOCKET_TIMEOUT_SECS);
@@ -152,6 +165,15 @@ impl Transport {
             btsp_authenticated: true,
             session_keys,
         })
+    }
+
+    /// On non-unix platforms, UDS+BTSP is not available.
+    #[cfg(not(unix))]
+    pub fn unix_btsp(path: &Path, _family_seed: &[u8]) -> Result<Self, IpcError> {
+        Err(classify_io_error(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("Unix domain sockets not available on this platform (path: {})", path.display()),
+        )))
     }
 
     /// Connect via TCP to the given address (e.g. `"127.0.0.1:9100"`).
@@ -254,6 +276,7 @@ impl Transport {
 
     fn write_all(&mut self, data: &[u8]) -> Result<(), IpcError> {
         match &mut self.inner {
+            #[cfg(unix)]
             TransportInner::Unix(reader) => {
                 reader.get_mut().write_all(data).map_err(classify_io_error)
             }
@@ -266,6 +289,7 @@ impl Transport {
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), IpcError> {
         use std::io::Read;
         match &mut self.inner {
+            #[cfg(unix)]
             TransportInner::Unix(reader) => reader.read_exact(buf).map_err(classify_io_error),
             TransportInner::Tcp(reader) => reader.read_exact(buf).map_err(classify_io_error),
         }
@@ -288,6 +312,7 @@ impl Transport {
     fn read_line(&mut self) -> Result<String, IpcError> {
         let mut line = String::new();
         match &mut self.inner {
+            #[cfg(unix)]
             TransportInner::Unix(reader) => {
                 reader.read_line(&mut line).map_err(classify_io_error)?;
             }
@@ -301,7 +326,10 @@ impl Transport {
     /// Whether this transport is a Unix domain socket.
     #[must_use]
     pub const fn is_unix(&self) -> bool {
-        matches!(self.inner, TransportInner::Unix(_))
+        #[cfg(unix)]
+        { matches!(self.inner, TransportInner::Unix(_)) }
+        #[cfg(not(unix))]
+        { false }
     }
 
     /// Whether this transport is a TCP socket.
@@ -324,14 +352,14 @@ impl Transport {
 
     /// Transport type as a display string.
     #[must_use]
-    pub const fn transport_type(&self) -> &str {
-        match (
-            &self.inner,
-            self.btsp_authenticated,
-            self.session_keys.is_some(),
-        ) {
+    pub fn transport_type(&self) -> &str {
+        let encrypted = self.session_keys.is_some();
+        match (&self.inner, self.btsp_authenticated, encrypted) {
+            #[cfg(unix)]
             (TransportInner::Unix(_), true, true) => "unix+btsp+chacha20",
+            #[cfg(unix)]
             (TransportInner::Unix(_), true, false) => "unix+btsp",
+            #[cfg(unix)]
             (TransportInner::Unix(_), false, _) => "unix",
             (TransportInner::Tcp(_), true, true) => "tcp+btsp+chacha20",
             (TransportInner::Tcp(_), true, false) => "tcp+btsp",
@@ -370,10 +398,11 @@ pub fn connect_transport(address: &str) -> Result<Transport, IpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
 
+    #[cfg(unix)]
     #[test]
     fn unix_transport_connects() {
+        use std::os::unix::net::UnixListener;
         let dir = std::env::temp_dir().join("primalspring-transport-test");
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("transport-unix.sock");
@@ -415,12 +444,14 @@ mod tests {
         let _ = std::fs::remove_file(&sock);
     }
 
+    #[cfg(unix)]
     #[test]
     fn connect_transport_unix_explicit() {
         let result = connect_transport("unix:/nonexistent/socket.sock");
         assert!(result.is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn connect_transport_unix_implicit() {
         let result = connect_transport("/nonexistent/socket.sock");

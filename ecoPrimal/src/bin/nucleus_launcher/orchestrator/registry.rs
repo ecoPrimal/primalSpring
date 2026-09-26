@@ -312,7 +312,13 @@ pub(super) fn register_with_discovery(port: u16, payload: &str) -> Result<(), Re
     }
 }
 
-/// Send a JSON-RPC payload over a Unix domain socket.
+/// Send a JSON-RPC payload over a Unix domain socket (unix) or TCP loopback (Windows).
+///
+/// On unix, connects to the socket path directly. On Windows, UDS is unavailable —
+/// falls back to TCP on the port derived from the socket filename convention
+/// (e.g. `songbird-tower-northgate.sock` → `SONGBIRD_PORT` env var or default 9800).
+/// This follows the G68 pattern from toadStool `platform.rs`: same thing differently.
+#[cfg(unix)]
 fn send_uds_rpc(socket: &std::path::Path, payload: &str) -> Result<String, RegistryError> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
@@ -339,6 +345,61 @@ fn send_uds_rpc(socket: &std::path::Path, payload: &str) -> Result<String, Regis
         }
         Ok(_) => Err(RegistryError::EmptyResponse),
         Err(e) => Err(RegistryError::Io(e)),
+    }
+}
+
+#[cfg(not(unix))]
+fn send_uds_rpc(socket: &std::path::Path, payload: &str) -> Result<String, RegistryError> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let port = socket_path_to_port(socket);
+    let addr = local_addr(port);
+    let timeout = Duration::from_secs(5);
+
+    let mut stream =
+        TcpStream::connect_timeout(&addr, timeout).map_err(RegistryError::Unreachable)?;
+
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    stream
+        .write_all(&tolerances::RIBOCIPHER_CLEAR_SIGNAL)
+        .map_err(RegistryError::Io)?;
+    stream
+        .write_all(payload.as_bytes())
+        .map_err(RegistryError::Io)?;
+    stream.write_all(b"\n").map_err(RegistryError::Io)?;
+
+    let mut buf = [0u8; 4096];
+    match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let resp = String::from_utf8_lossy(&buf[..n]).to_string();
+            Ok(resp)
+        }
+        Ok(_) => Err(RegistryError::EmptyResponse),
+        Err(e) => Err(RegistryError::Io(e)),
+    }
+}
+
+/// Derive a TCP port from a socket path for Windows fallback.
+///
+/// Convention: socket filename prefix maps to a primal's well-known port.
+/// Falls back to the riboCipher default (9800) if unrecognized.
+#[cfg(not(unix))]
+fn socket_path_to_port(socket: &std::path::Path) -> u16 {
+    let name = socket
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if name.starts_with("songbird") {
+        env_port("SONGBIRD_PORT", 9800)
+    } else if name.starts_with("biomeos") || name.starts_with("neural") {
+        env_port("BIOMEOS_PORT", 9801)
+    } else if name.starts_with("beardog") {
+        env_port("BEARDOG_PORT", 9100)
+    } else {
+        env_port("NUCLEUS_FALLBACK_PORT", 9800)
     }
 }
 

@@ -14,9 +14,12 @@
 //! - Each primal has a corresponding socket in `/run/user/{uid}/biomeos/`
 //! - Socket liveness probe: connect + `health.liveness` JSON-RPC + verify `"result"`
 
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
 use crate::composition::CompositionContext;
@@ -306,6 +309,7 @@ fn resolve_primal_socket(base: &Path, primal: &str) -> PathBuf {
     plain
 }
 
+#[cfg(unix)]
 fn probe_socket_liveness(socket: &Path) -> bool {
     let timeout = Duration::from_secs(tolerances::IPC_SOCKET_TIMEOUT_SECS);
     let Ok(mut stream) = UnixStream::connect(socket) else {
@@ -337,6 +341,11 @@ fn probe_socket_liveness(socket: &Path) -> bool {
         }
         _ => false,
     }
+}
+
+#[cfg(not(unix))]
+fn probe_socket_liveness(_socket: &Path) -> bool {
+    false
 }
 
 fn biomeos_socket_dir() -> Option<PathBuf> {

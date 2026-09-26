@@ -44,6 +44,7 @@
 //! ```
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
@@ -80,6 +81,7 @@ impl BindMode {
 #[derive(Debug)]
 pub enum BoundTransport {
     /// Bound to a Unix domain socket at the given path.
+    #[cfg(unix)]
     Unix(UnixListener, PathBuf),
     /// Bound to a TCP socket at the given address.
     Tcp(TcpListener, SocketAddr),
@@ -90,6 +92,7 @@ impl BoundTransport {
     #[must_use]
     pub fn endpoint_display(&self) -> String {
         match self {
+            #[cfg(unix)]
             Self::Unix(_, path) => format!("unix:{}", path.display()),
             Self::Tcp(_, addr) => format!("tcp:{addr}"),
         }
@@ -178,6 +181,7 @@ pub fn bind_transport(primal_slug: &str, mode: BindMode) -> Result<BoundTranspor
     }
 }
 
+#[cfg(unix)]
 fn bind_uds(primal_slug: &str) -> Result<BoundTransport, BindError> {
     let family_id = crate::env_keys::resolve_family_id();
     let sock_path = crate::ipc::discover::socket_path(primal_slug, &family_id);
@@ -199,6 +203,17 @@ fn bind_uds(primal_slug: &str) -> Result<BoundTransport, BindError> {
             source: e,
         }),
     }
+}
+
+#[cfg(not(unix))]
+fn bind_uds(primal_slug: &str) -> Result<BoundTransport, BindError> {
+    Err(BindError::UdsFailed {
+        path: std::path::PathBuf::from(format!("/tmp/{primal_slug}.sock")),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Unix domain sockets not available on this platform",
+        ),
+    })
 }
 
 fn bind_tcp(primal_slug: &str) -> Result<BoundTransport, BindError> {
@@ -261,6 +276,7 @@ mod tests {
         assert_eq!(resolve_tcp_port("petaltongue"), Some(9900));
     }
 
+    #[cfg(unix)]
     #[test]
     fn bind_transport_uds_succeeds() {
         let result = bind_transport("primalspring_test_uds", BindMode::UdsOnly);
@@ -279,8 +295,10 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn bound_transport_display() {
+        use std::os::unix::net::UnixListener;
         let path = PathBuf::from("/tmp/primalspring_bind_test.sock");
         let _ = std::fs::remove_file(&path);
         let display = BoundTransport::Unix(UnixListener::bind(&path).unwrap(), path.clone())
@@ -289,8 +307,10 @@ mod tests {
         assert!(display.starts_with("unix:"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn bound_transport_is_tcp() {
+        use std::os::unix::net::UnixListener;
         let path = PathBuf::from("/tmp/primalspring_tcp_test.sock");
         let _ = std::fs::remove_file(&path);
         let uds = BoundTransport::Unix(UnixListener::bind(&path).unwrap(), path.clone());
